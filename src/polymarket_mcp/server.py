@@ -3,12 +3,17 @@
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 from . import polymarket
-from .polymarket import TIMEFRAME_SECONDS
+from .polymarket import (
+    INTERVAL_FIDELITY,
+    RANGE_CLOB_INTERVALS,
+    TIMEFRAME_SECONDS,
+)
 
 mcp = FastMCP("polymarket")
 
@@ -97,6 +102,76 @@ async def get_trending_markets(
             summary[change_key] = change
         summaries.append(summary)
     return json.dumps(summaries, indent=2)
+
+
+@mcp.tool()
+async def get_market_probability(slug: str) -> str:
+    """Get the current probability and metadata for a specific prediction market.
+
+    Returns the market question, slug, probability_yes, full outcome
+    probabilities, 24h volume, liquidity, end date, and resolution status.
+    """
+    try:
+        market = await polymarket.get_market(slug)
+    except httpx.HTTPError:
+        return f"Unable to reach Polymarket while fetching '{slug}'."
+    if market is None:
+        return f"No market found with slug '{slug}'."
+    summary = polymarket.summarize_market(market)
+    summary["closed"] = bool(market.get("closed"))
+    summary["last_updated"] = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return json.dumps(summary, indent=2)
+
+
+@mcp.tool()
+async def get_probability_timeseries(
+    slug: str, range: str = "7d", interval: str = "1h"
+) -> str:
+    """Retrieve historical probability changes for a market over time.
+
+    Points track the primary outcome (Yes when present) as {"t": unix_seconds,
+    "p": probability}. Valid ranges: 24h, 7d, 30d, 90d, all.
+    Valid intervals: 5m, 15m, 1h, 6h, 1d. Falls back to defaults when invalid.
+    """
+    if range not in RANGE_CLOB_INTERVALS:
+        range = "7d"
+    if interval not in INTERVAL_FIDELITY:
+        interval = "1h"
+    try:
+        market = await polymarket.get_market(slug)
+    except httpx.HTTPError:
+        return f"Unable to reach Polymarket while fetching history for '{slug}'."
+    if market is None:
+        return f"No market found with slug '{slug}'."
+    token_id = polymarket.primary_token_id(market)
+    if token_id is None:
+        return f"Market '{slug}' has no tradable outcomes to chart."
+    try:
+        history = await polymarket.price_history(
+            token_id,
+            interval=RANGE_CLOB_INTERVALS[range],
+            fidelity=INTERVAL_FIDELITY[interval],
+        )
+    except httpx.HTTPError:
+        return f"Unable to fetch price history for '{slug}'."
+    result = {
+        "question": market.get("question"),
+        "slug": market.get("slug"),
+        "range": range,
+        "interval": interval,
+        "current_probability_yes": next(
+            (
+                p
+                for name, p in polymarket.outcome_probabilities(market)
+                if name.lower() == "yes"
+            ),
+            None,
+        ),
+        "points": [{"t": point["t"], "p": point["p"]} for point in history],
+    }
+    return json.dumps(result, indent=2)
 
 
 def main():

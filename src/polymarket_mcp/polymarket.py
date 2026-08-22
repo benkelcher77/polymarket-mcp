@@ -22,6 +22,24 @@ TIMEFRAME_SECONDS = {
     "7d": 604800,
 }
 
+# Tool-level time ranges mapped to CLOB prices-history intervals.
+RANGE_CLOB_INTERVALS = {
+    "24h": "1d",
+    "7d": "1w",
+    "30d": "1m",
+    "90d": "max",
+    "all": "max",
+}
+
+# Tool-level data point granularity mapped to fidelity in minutes.
+INTERVAL_FIDELITY = {
+    "5m": 5,
+    "15m": 15,
+    "1h": 60,
+    "6h": 360,
+    "1d": 1440,
+}
+
 
 async def fetch_json(url: str) -> Any:
     """GET a URL and return the parsed JSON body.
@@ -110,6 +128,15 @@ def primary_token_id(market: dict[str, Any]) -> str | None:
             index = position
             break
     return str(tokens[index]) if index < len(tokens) else None
+
+
+async def get_market(slug: str) -> dict[str, Any] | None:
+    """Fetch a single Gamma market by its slug."""
+    url = f"{GAMMA_API_BASE}/markets?slug={quote(slug)}"
+    markets = await fetch_json(url)
+    if isinstance(markets, list) and markets and isinstance(markets[0], dict):
+        return markets[0]
+    return None
 
 
 async def search_markets(query: str, limit: int = 10) -> list[dict[str, Any]]:

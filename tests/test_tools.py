@@ -116,7 +116,83 @@ class TestTrendingMarkets:
         assert "price_change_24h" in data[0]
 
 
-class TestHelpers:
+class TestGetMarketProbability:
+    def test_returns_summary_with_status(self, monkeypatch):
+        monkeypatch.setattr(
+            polymarket,
+            "fetch_json",
+            fake_fetch({"/markets?slug=": [FAKE_MARKET]}),
+        )
+        result = run(server.get_market_probability("fed-cut-september-2026"))
+        data = json.loads(result)
+        assert data["probability_yes"] == 0.62
+        assert data["closed"] is False
+        assert "last_updated" in data
+        assert data["end_date"] == "2026-09-16"
+
+    def test_unknown_slug_message(self, monkeypatch):
+        monkeypatch.setattr(
+            polymarket, "fetch_json", fake_fetch({"/markets?slug=": []})
+        )
+        result = run(server.get_market_probability("missing-slug"))
+        assert result == "No market found with slug 'missing-slug'."
+
+    def test_http_error_message(self, monkeypatch):
+        monkeypatch.setattr(
+            polymarket,
+            "fetch_json",
+            fake_fetch({"/markets?slug=": httpx.ConnectError("boom")}),
+        )
+        result = run(server.get_market_probability("fed-cut-september-2026"))
+        assert result.startswith("Unable to reach Polymarket")
+
+
+class TestProbabilityTimeseries:
+    def test_returns_points(self, monkeypatch):
+        routes = {
+            "/markets?slug=": [FAKE_MARKET],
+            "prices-history": {
+                "history": [
+                    {"t": 1787324419, "p": 0.575},
+                    {"t": 1787364014, "p": 0.63},
+                ]
+            },
+        }
+        monkeypatch.setattr(polymarket, "fetch_json", fake_fetch(routes))
+        result = run(server.get_probability_timeseries("fed-cut-september-2026"))
+        data = json.loads(result)
+        assert data["range"] == "7d"
+        assert data["interval"] == "1h"
+        assert data["current_probability_yes"] == 0.62
+        assert len(data["points"]) == 2
+
+    def test_invalid_params_fall_back(self, monkeypatch):
+        urls = []
+
+        async def capture(url: str):
+            urls.append(url)
+            if "prices-history" in url:
+                return {"history": [{"t": 1, "p": 0.5}]}
+            return [FAKE_MARKET]
+
+        monkeypatch.setattr(polymarket, "fetch_json", capture)
+        result = run(
+            server.get_probability_timeseries(
+                "fed-cut-september-2026", range="decade", interval="3s"
+            )
+        )
+        data = json.loads(result)
+        assert data["range"] == "7d"
+        assert data["interval"] == "1h"
+        assert any("fidelity=60" in url and "interval=1w" in url for url in urls)
+
+    def test_no_token_message(self, monkeypatch):
+        market = dict(FAKE_MARKET, clobTokenIds='[]')
+        monkeypatch.setattr(
+            polymarket, "fetch_json", fake_fetch({"/markets?slug=": [market]})
+        )
+        result = run(server.get_probability_timeseries("fed-cut-september-2026"))
+        assert result == "Market 'fed-cut-september-2026' has no tradable outcomes to chart."
     def test_parse_json_list_variants(self):
         assert polymarket.parse_json_list('["a", "b"]') == ["a", "b"]
         assert polymarket.parse_json_list(["a"]) == ["a"]
