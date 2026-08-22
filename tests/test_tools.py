@@ -14,6 +14,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
+@pytest.fixture(autouse=True)
+def clear_cache():
+    polymarket._cache.clear()
+    yield
+    polymarket._cache.clear()
+
+
 def fake_fetch(routes):
     """Build a fetch_json replacement dispatching on URL substring."""
 
@@ -393,3 +400,57 @@ class TestWorldState:
         )
         result = run(server.world_state_from_markets(["politics"], 2))
         assert result == "Unable to reach Polymarket while building the world state."
+
+
+class TestFetchCache:
+    def test_repeated_urls_served_from_cache(self, monkeypatch):
+        calls = []
+
+        async def fake_http(url: str):
+            calls.append(url)
+            return {"n": len(calls)}
+
+        monkeypatch.setattr(polymarket, "_http_get_json", fake_http)
+
+        async def twice():
+            first = await polymarket.fetch_json("https://example.test/x")
+            second = await polymarket.fetch_json("https://example.test/x")
+            return first, second
+
+        first, second = run(twice())
+        assert len(calls) == 1
+        assert first == second == {"n": 1}
+
+    def test_expired_ttl_refetches(self, monkeypatch):
+        monkeypatch.setattr(polymarket, "_CACHE_TTL_SECONDS", 0)
+        calls = []
+
+        async def fake_http(url: str):
+            calls.append(url)
+            return {"n": len(calls)}
+
+        monkeypatch.setattr(polymarket, "_http_get_json", fake_http)
+
+        async def twice():
+            await polymarket.fetch_json("https://example.test/y")
+            await polymarket.fetch_json("https://example.test/y")
+
+        run(twice())
+        assert len(calls) == 2
+
+    def test_evicts_oldest_when_full(self, monkeypatch):
+        monkeypatch.setattr(polymarket, "_CACHE_MAX_ENTRIES", 4)
+
+        async def fake_http(url: str):
+            return {"url": url}
+
+        monkeypatch.setattr(polymarket, "_http_get_json", fake_http)
+
+        async def fill():
+            for i in range(6):
+                await polymarket.fetch_json(f"https://example.test/{i}")
+
+        run(fill())
+        assert "https://example.test/0" not in polymarket._cache
+        assert "https://example.test/5" in polymarket._cache
+        assert len(polymarket._cache) <= 4

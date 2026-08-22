@@ -1,6 +1,7 @@
 """HTTP access to Polymarket's public Gamma and CLOB APIs."""
 
 import json
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -13,6 +14,12 @@ _HEADERS = {
     "User-Agent": "polymarket-mcp/0.1",
     "Accept": "application/json",
 }
+
+_CACHE_TTL_SECONDS = 60.0
+_CACHE_MAX_ENTRIES = 256
+
+# URL -> (monotonic insert time, parsed body)
+_cache: dict[str, tuple[float, Any]] = {}
 
 # Supported trend-annotation windows mapped to seconds.
 TIMEFRAME_SECONDS = {
@@ -52,15 +59,43 @@ CATEGORY_TAGS = {
 }
 
 
-async def fetch_json(url: str) -> Any:
-    """GET a URL and return the parsed JSON body.
+def _cache_get(url: str) -> Any | None:
+    entry = _cache.get(url)
+    if entry is None:
+        return None
+    if time.monotonic() - entry[0] < _CACHE_TTL_SECONDS:
+        return entry[1]
+    _cache.pop(url, None)
+    return None
 
-    Raises httpx.HTTPError subclasses on network or HTTP failure.
-    """
+
+def _cache_put(url: str, value: Any) -> None:
+    if len(_cache) >= _CACHE_MAX_ENTRIES:
+        oldest = sorted(_cache.items(), key=lambda kv: kv[1][0])
+        for key, _ in oldest[: len(oldest) // 2]:
+            del _cache[key]
+    _cache[url] = (time.monotonic(), value)
+
+
+async def _http_get_json(url: str) -> Any:
     async with httpx.AsyncClient() as client:
         response = await client.get(url, headers=_HEADERS, timeout=30.0)
         response.raise_for_status()
         return response.json()
+
+
+async def fetch_json(url: str) -> Any:
+    """GET a URL and return the parsed JSON body, cached briefly per URL.
+
+    Raises httpx.HTTPError subclasses on network or HTTP failure. Repeated
+    requests for the same URL within the TTL are served from memory.
+    """
+    cached = _cache_get(url)
+    if cached is not None:
+        return cached
+    data = await _http_get_json(url)
+    _cache_put(url, data)
+    return data
 
 
 def parse_json_list(value: Any) -> list:

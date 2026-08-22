@@ -72,8 +72,9 @@ uv run polymarket-mcp
 ## Architecture
 
 - `src/polymarket_mcp/polymarket.py` — Gamma API (search/markets/events/tags)
-  and CLOB API (price history) clients, plus normalization of Polymarket's
-  string-encoded fields into plain data.
+  and CLOB API (price history) clients, normalization of Polymarket's
+  string-encoded fields into plain data, and a small per-URL TTL cache so
+  repeated slugs within a session don't re-hit the API.
 - `src/polymarket_mcp/server.py` — FastMCP tool definitions.
 
 No API key required; both APIs are public read-only endpoints.
