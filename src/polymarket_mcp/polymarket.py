@@ -40,6 +40,17 @@ INTERVAL_FIDELITY = {
     "1d": 1440,
 }
 
+# World-state domains mapped to Gamma tag slugs.
+CATEGORY_TAGS = {
+    "politics": "politics",
+    "economics": "economics",
+    "technology": "technology",
+    "crypto": "crypto",
+    "geopolitics": "geopolitics",
+    "science": "science",
+    "sports": "sports",
+}
+
 
 async def fetch_json(url: str) -> Any:
     """GET a URL and return the parsed JSON body.
@@ -139,14 +150,51 @@ async def get_market(slug: str) -> dict[str, Any] | None:
     return None
 
 
-async def search_markets(query: str, limit: int = 10) -> list[dict[str, Any]]:
-    """Search Gamma for active markets relevant to a query, ranked by 24h volume."""
+async def get_event(slug: str) -> dict[str, Any] | None:
+    """Fetch a single Gamma event by its slug."""
+    url = f"{GAMMA_API_BASE}/events?slug={quote(slug)}"
+    events = await fetch_json(url)
+    if isinstance(events, list) and events and isinstance(events[0], dict):
+        return events[0]
+    return None
+
+
+async def search_events(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Search Gamma for active events relevant to a query, ranked by relevance."""
     url = (
         f"{GAMMA_API_BASE}/public-search?q={quote(query)}"
         f"&limit_per_type={max(limit, 5)}&keep_closed_markets=0"
     )
     data = await fetch_json(url)
     events = data.get("events", []) if isinstance(data, dict) else []
+    return [event for event in events if isinstance(event, dict)]
+
+
+async def events_by_tag(tag_slug: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Fetch active Gamma events for a tag slug, ranked by 24h volume."""
+    url = (
+        f"{GAMMA_API_BASE}/events?closed=false&tag_slug={quote(tag_slug)}"
+        f"&order=volume24hr&ascending=false&limit={limit}"
+    )
+    events = await fetch_json(url)
+    if not isinstance(events, list):
+        return []
+    return [event for event in events if isinstance(event, dict)]
+
+
+def event_tag_slugs(event: dict[str, Any]) -> list[str]:
+    """Tag slugs attached to a Gamma event, most specific first."""
+    tags = event.get("tags") or []
+    return [
+        tag["slug"]
+        for tag in tags
+        if isinstance(tag, dict) and tag.get("slug")
+    ]
+
+
+async def search_markets(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Search Gamma for active markets relevant to a query, ranked by 24h volume."""
+    events = await search_events(query, limit)
     markets = [
         market
         for event in events

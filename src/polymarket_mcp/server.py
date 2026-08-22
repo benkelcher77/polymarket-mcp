@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from . import polymarket
 from .polymarket import (
+    CATEGORY_TAGS,
     INTERVAL_FIDELITY,
     RANGE_CLOB_INTERVALS,
     TIMEFRAME_SECONDS,
@@ -172,6 +173,177 @@ async def get_probability_timeseries(
         "points": [{"t": point["t"], "p": point["p"]} for point in history],
     }
     return json.dumps(result, indent=2)
+
+
+_STOPWORDS = {
+    "will", "the", "be", "by", "after", "before", "during", "than", "more",
+    "less", "this", "that", "with", "from", "into", "over", "under", "when",
+    "what", "which", "who", "how", "does", "did", "have", "has", "and",
+}
+
+
+def _keywords(question: str, max_words: int = 6) -> str:
+    words = [w.strip(".,?!\"'").lower() for w in question.split()]
+    significant = [w for w in words if len(w) > 3 and w not in _STOPWORDS]
+    return "+".join(significant[:max_words])
+
+
+def _event_context(event: dict, max_markets: int) -> dict | None:
+    """Compact event digest with its top markets by 24h volume."""
+    markets = sorted(
+        (m for m in event.get("markets", []) if not m.get("closed")),
+        key=lambda m: m.get("volume24hr") or 0,
+        reverse=True,
+    )[:max_markets]
+    if not markets:
+        return None
+    description = (event.get("description") or "").strip()
+    if len(description) > 300:
+        description = description[:297] + "..."
+    context = {
+        "event": event.get("title"),
+        "event_slug": event.get("slug"),
+        "markets": [polymarket.summarize_market(m) for m in markets],
+    }
+    if description:
+        context["description"] = description
+    return context
+
+
+@mcp.tool()
+async def get_related_markets(slug: str, limit: int = DEFAULT_LIMIT) -> str:
+    """Find prediction markets related to a given market via shared category tags.
+
+    Falls back to keyword search when the market has no taggable parent event.
+    """
+    limit = clamp_limit(limit)
+    try:
+        market = await polymarket.get_market(slug)
+    except httpx.HTTPError:
+        return f"Unable to reach Polymarket while fetching '{slug}'."
+    if market is None:
+        return f"No market found with slug '{slug}'."
+
+    candidates: list[dict] = []
+    source_event_slug = None
+    events = market.get("events") or []
+    if events and isinstance(events[0], dict):
+        source_event_slug = events[0].get("slug")
+    if source_event_slug:
+        try:
+            event = await polymarket.get_event(source_event_slug)
+            tags = polymarket.event_tag_slugs(event) if event else []
+        except httpx.HTTPError:
+            tags = []
+        for tag in tags[:2]:
+            try:
+                related_events = await polymarket.events_by_tag(tag, limit * 3)
+            except httpx.HTTPError:
+                continue
+            candidates.extend(
+                m
+                for e in related_events
+                if e.get("slug") != source_event_slug
+                for m in e.get("markets", [])
+            )
+    if not candidates:
+        query = _keywords(market.get("question") or "")
+        if not query:
+            return f"No related markets found for '{slug}'."
+        try:
+            candidates = await polymarket.search_markets(query, limit + 1)
+        except httpx.HTTPError:
+            return f"Unable to reach Polymarket while searching for related markets."
+
+    candidates = [
+        m for m in candidates
+        if m.get("slug") and m.get("slug") != slug and not m.get("closed")
+    ]
+    seen = set()
+    unique = []
+    for m in sorted(candidates, key=lambda x: x.get("volume24hr") or 0, reverse=True):
+        if m["slug"] not in seen:
+            seen.add(m["slug"])
+            unique.append(m)
+    if not unique:
+        return f"No related markets found for '{slug}'."
+    summaries = [polymarket.summarize_market(m) for m in unique[:limit]]
+    return json.dumps(summaries, indent=2)
+
+
+@mcp.tool()
+async def summarize_prediction_markets(topic: str, limit: int = DEFAULT_LIMIT) -> str:
+    """Generate a high-level summary of prediction market probabilities for a topic.
+
+    Groups related markets under their parent events with trimmed descriptions,
+    giving a compact probabilistic overview of the topic.
+    """
+    limit = clamp_limit(limit)
+    try:
+        events = await polymarket.search_events(topic, limit)
+    except httpx.HTTPError:
+        return f"Unable to reach Polymarket while searching for '{topic}'."
+    contexts = []
+    remaining = limit
+    for event in events:
+        if remaining <= 0:
+            break
+        context = _event_context(event, remaining)
+        if context is None:
+            continue
+        contexts.append(context)
+        remaining -= len(context["markets"])
+    if not contexts:
+        return f"No prediction markets found for '{topic}'."
+    return json.dumps({"topic": topic, "events": contexts}, indent=2)
+
+
+@mcp.tool()
+async def world_state_from_markets(
+    categories: list[str] | None = None, limit_per_category: int = 5
+) -> str:
+    """Return a structured snapshot of the world's probabilistic state.
+
+    Aggregates the highest-volume active markets across major prediction
+    market domains. Valid categories: politics, economics, technology, crypto,
+    geopolitics, science, sports. Defaults to all categories.
+    """
+    limit_per_category = max(1, min(limit_per_category, MAX_LIMIT))
+    selected = list(CATEGORY_TAGS)
+    if categories:
+        unknown = [c for c in categories if c not in CATEGORY_TAGS]
+        if unknown:
+            valid = ", ".join(sorted(CATEGORY_TAGS))
+            return f"Unknown categories: {', '.join(unknown)}. Valid categories: {valid}."
+        selected = list(dict.fromkeys(categories))
+
+    async def top_for_category(category: str) -> list[dict]:
+        events = await polymarket.events_by_tag(
+            CATEGORY_TAGS[category], limit_per_category * 2
+        )
+        markets = [
+            m
+            for e in events
+            for m in e.get("markets", [])
+            if not m.get("closed") and m.get("slug")
+        ]
+        markets.sort(key=lambda m: m.get("volume24hr") or 0, reverse=True)
+        return [polymarket.summarize_market(m) for m in markets[:limit_per_category]]
+
+    results = await asyncio.gather(
+        *(top_for_category(c) for c in selected), return_exceptions=True
+    )
+    snapshot: dict = {"generated_at": datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"), "categories": {}}
+    failures = 0
+    for category, result in zip(selected, results):
+        if isinstance(result, BaseException):
+            failures += 1
+            continue
+        snapshot["categories"][category] = result
+    if failures == len(selected):
+        return "Unable to reach Polymarket while building the world state."
+    return json.dumps(snapshot, indent=2)
 
 
 def main():
