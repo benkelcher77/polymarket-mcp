@@ -1,12 +1,12 @@
 ## Tools
 
-- search_markets(query, limit)
-- get_market_probability(slug)
-- get_trending_markets(limit, range)
-- get_probability_timeseries(slug, range, interval)
-- get_related_markets(slug, limit)
-- summarize_prediction_markets(topic, limit)
-- world_state_from_markets(domains)
+- [x] search_markets(query, limit)
+- [x] get_market_probability(slug)
+- [x] get_trending_markets(limit, range)
+- [x] get_probability_timeseries(slug, range, interval)
+- [x] get_related_markets(slug, limit)
+- [x] summarize_prediction_markets(topic, limit)
+- [x] world_state_from_markets(domains)
 
 ## Schema
 
