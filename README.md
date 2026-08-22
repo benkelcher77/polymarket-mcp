@@ -14,6 +14,7 @@ moving.
 | `get_market_probability(slug)` | Current probability and metadata for one market (normalized `probability_yes`) |
 | `get_probability_timeseries(slug, range="7d", interval="1h")` | Historical probability points; ranges `24h/7d/30d/90d/all`, intervals `5m/15m/1h/6h/1d` |
 | `get_related_markets(slug, limit=5)` | Markets related via shared event tags, with keyword-search fallback |
+| `get_event_probabilities(slug)` | Roll up a multi-outcome question's sibling markets into one normalized distribution; accepts an event or member market slug |
 | `summarize_prediction_markets(topic, limit=10)` | Events with their top markets and probabilities for a topic |
 | `world_state_from_markets(categories=None, limit_per_category=5)` | Snapshot across domains: politics, economics, technology, crypto, geopolitics, science, sports |
 

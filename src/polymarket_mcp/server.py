@@ -368,6 +368,51 @@ async def world_state_from_markets(
     return json.dumps(snapshot, indent=2)
 
 
+@mcp.tool()
+async def get_event_probabilities(slug: str) -> str:
+    """Roll up a multi-outcome question's sibling markets into one distribution.
+
+    Accepts an event slug or any member market's slug. Returns each outcome
+    with its raw market price and its share normalized across siblings.
+    Normalization assumes outcomes are mutually exclusive and collectively
+    exhaustive; check outcomes_total_raw_probability to judge how well that holds.
+    """
+    try:
+        event = await polymarket.get_event(slug)
+        if event is None:
+            market = await polymarket.get_market(slug)
+            events = (market or {}).get("events") or []
+            parent_slug = events[0].get("slug") if events else None
+            if parent_slug:
+                event = await polymarket.get_event(parent_slug)
+    except httpx.HTTPError:
+        return f"Unable to reach Polymarket while fetching '{slug}'."
+    if event is None:
+        return f"No event found for '{slug}'."
+
+    rows = sorted(
+        polymarket.event_outcome_rows(event),
+        key=lambda row: row["probability"],
+        reverse=True,
+    )
+    if not rows:
+        return f"Event '{slug}' has no open binary outcome markets to roll up."
+    total = sum(row["probability"] for row in rows)
+    if total > 0:
+        for row in rows:
+            row["normalized_probability"] = round(row["probability"] / total, 4)
+    else:
+        for row in rows:
+            row["normalized_probability"] = None
+    result = {
+        "event": event.get("title"),
+        "event_slug": event.get("slug"),
+        "outcomes_total_raw_probability": round(total, 4),
+        "rollup": rows,
+    }
+    return json.dumps(result, indent=2)
+
+
 def main():
     mcp.run(transport="stdio")
 

@@ -454,3 +454,99 @@ class TestFetchCache:
         assert "https://example.test/0" not in polymarket._cache
         assert "https://example.test/5" in polymarket._cache
         assert len(polymarket._cache) <= 4
+
+
+class TestEventProbabilities:
+    def event(self):
+        return {
+            "title": "Who wins the award?",
+            "slug": "who-wins-award",
+            "markets": [
+                {
+                    "question": "Will Alice win the award?",
+                    "slug": "alice-win",
+                    "groupItemTitle": "Alice",
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.60", "0.40"]',
+                },
+                {
+                    "question": "Will Bob win the award?",
+                    "slug": "bob-win",
+                    "groupItemTitle": "Bob",
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.30", "0.70"]',
+                },
+                {
+                    "question": "Will Carol win the award?",
+                    "slug": "carol-win",
+                    "groupItemTitle": "Carol",
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.05", "0.95"]',
+                },
+            ],
+        }
+
+    def test_normalizes_sibling_markets(self, monkeypatch):
+        monkeypatch.setattr(
+            polymarket, "fetch_json", fake_fetch({"/events?slug=": [self.event()]})
+        )
+        result = run(server.get_event_probabilities("who-wins-award"))
+        data = json.loads(result)
+        assert data["event_slug"] == "who-wins-award"
+        assert data["outcomes_total_raw_probability"] == pytest.approx(0.95)
+        rollup = [(r["outcome"], r["normalized_probability"]) for r in data["rollup"]]
+        assert rollup == [
+            ("Alice", pytest.approx(0.6316)),
+            ("Bob", pytest.approx(0.3158)),
+            ("Carol", pytest.approx(0.0526)),
+        ]
+
+    def test_resolves_member_market_to_event(self, monkeypatch):
+        market = dict(FAKE_MARKET, events=[{"slug": "who-wins-award"}])
+        routes = {
+            "/markets?slug=": [market],
+            "/events?slug=alice-win": [],
+            "/events?slug=who-wins-award": [self.event()],
+        }
+        monkeypatch.setattr(polymarket, "fetch_json", fake_fetch(routes))
+        result = run(server.get_event_probabilities("alice-win"))
+        data = json.loads(result)
+        assert data["event"] == "Who wins the award?"
+        assert len(data["rollup"]) == 3
+
+    def test_skips_closed_and_nonbinary_markets(self, monkeypatch):
+        event = self.event()
+        event["markets"].append(dict(event["markets"][0], slug="closed-m", closed=True))
+        event["markets"].append(
+            {
+                "question": "Over or under?",
+                "slug": "over-under",
+                "outcomes": '["Over", "Under"]',
+                "outcomePrices": '["0.5", "0.5"]',
+            }
+        )
+        monkeypatch.setattr(
+            polymarket, "fetch_json", fake_fetch({"/events?slug=": [event]})
+        )
+        result = run(server.get_event_probabilities("who-wins-award"))
+        data = json.loads(result)
+        assert [r["outcome"] for r in data["rollup"]] == ["Alice", "Bob", "Carol"]
+
+    def test_zero_total_yields_null_normalized(self, monkeypatch):
+        event = self.event()
+        for m in event["markets"]:
+            m["outcomePrices"] = '["0.0", "1.0"]'
+        monkeypatch.setattr(
+            polymarket, "fetch_json", fake_fetch({"/events?slug=": [event]})
+        )
+        data = json.loads(run(server.get_event_probabilities("who-wins-award")))
+        assert all(r["normalized_probability"] is None for r in data["rollup"])
+
+    def test_no_event_message(self, monkeypatch):
+        monkeypatch.setattr(
+            polymarket,
+            "fetch_json",
+            fake_fetch({"/events?slug=": [], "/markets?slug=": []}),
+        )
+        result = run(server.get_event_probabilities("missing-slug"))
+        assert result == "No event found for 'missing-slug'."

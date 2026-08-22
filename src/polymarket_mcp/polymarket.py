@@ -227,6 +227,37 @@ def event_tag_slugs(event: dict[str, Any]) -> list[str]:
     ]
 
 
+def event_outcome_rows(event: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-outcome probabilities from an event's open binary markets.
+
+    Each row is one mutually exclusive candidate outcome; its ``probability``
+    is that market's Yes price.
+    """
+    rows: list[dict[str, Any]] = []
+    for market in event.get("markets", []):
+        if market.get("closed"):
+            continue
+        yes_price = next(
+            (
+                price
+                for name, price in outcome_probabilities(market)
+                if name.lower() == "yes"
+            ),
+            None,
+        )
+        if yes_price is None:
+            continue
+        rows.append(
+            {
+                "outcome": market.get("groupItemTitle") or market.get("question"),
+                "market_slug": market.get("slug"),
+                "probability": yes_price,
+                "volume_24h": market.get("volume24hr"),
+            }
+        )
+    return rows
+
+
 async def search_markets(query: str, limit: int = 10) -> list[dict[str, Any]]:
     """Search Gamma for active markets relevant to a query, ranked by 24h volume."""
     events = await search_events(query, limit)
