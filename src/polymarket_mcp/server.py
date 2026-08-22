@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
+from textwrap import dedent
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -16,7 +17,28 @@ from .polymarket import (
     TIMEFRAME_SECONDS,
 )
 
-mcp = FastMCP("polymarket")
+INSTRUCTIONS = dedent("""\
+    Polymarket prediction markets as a real-world context source. Market
+    prices are crowd-implied probabilities, not ground truth.
+
+    Typical flows:
+    - Current events: get_trending_markets for what is actively trading now,
+      or world_state_from_markets for a broad snapshot across domains.
+    - Specific topic or question: search_markets (or
+      summarize_prediction_markets for a grouped overview), then
+      get_market_probability on promising slugs.
+    - How sentiment shifted: get_probability_timeseries on a market slug.
+    - Broader angle on one market: get_related_markets.
+    - Multi-outcome questions (elections, awards, sports): use
+      get_event_probabilities with any member market's slug to roll the
+      sibling markets up into one distribution.
+
+    Slugs returned by one tool are valid inputs everywhere a slug is asked
+    for. probability_yes is null for non-binary markets; read their outcomes
+    list instead.
+""")
+
+mcp = FastMCP("polymarket", instructions=INSTRUCTIONS)
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
